@@ -187,15 +187,15 @@ class VideoDataset(Dataset):
         return video_tensor, label
 
 
-def get_data_loader(config_path, batch_size=8, target_width=224, target_height=224,
+def get_data_loader(dataset_json, batch_size=8, target_width=224, target_height=224,
                     num_frames=16, stride=8, mode='single', frame_strategy='zero_pad',
-                    train_transform=None, val_transform=None, shuffle=True, num_workers=4,
+                    train_transform=None, val_transform=None, num_workers=4,
                     val_ratio=0.2, random_seed=42):
     """
     创建训练集和验证集数据加载器，按80-20比例划分
 
     参数:
-        config_path: 配置文件路径
+        dataset_json: 数据集配置文件路径
         batch_size: 批量大小
         target_width: 目标宽度
         target_height: 目标高度
@@ -217,7 +217,7 @@ def get_data_loader(config_path, batch_size=8, target_width=224, target_height=2
     """
     # 创建完整数据集
     full_dataset = VideoDataset(
-        config_path=config_path,
+        config_path=dataset_json,
         target_width=target_width,
         target_height=target_height,
         num_frames=num_frames,
@@ -228,7 +228,7 @@ def get_data_loader(config_path, batch_size=8, target_width=224, target_height=2
     )
 
     # 获取类别名称
-    with open(config_path, 'r') as f:
+    with open(dataset_json, 'r') as f:
         config = json.load(f)
     class_names = [action['name'] for action in config['actions']]
 
@@ -261,7 +261,7 @@ def get_data_loader(config_path, batch_size=8, target_width=224, target_height=2
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=collate_fn
@@ -270,7 +270,7 @@ def get_data_loader(config_path, batch_size=8, target_width=224, target_height=2
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
-        shuffle=False,  # 验证集不需要shuffle
+        shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=collate_fn
@@ -291,17 +291,16 @@ if __name__ == "__main__":
 
     print("=== 测试get_data_loader函数 ===")
     train_loader, val_loader, class_names = get_data_loader(
-        config_path="config.json",
+        dataset_json="dataset.json",
         batch_size=4,
         target_width=224,
         target_height=224,
-        num_frames=256,
-        stride=8,
-        mode='single',
+        num_frames=64,
+        stride=64,
+        mode='slide',
         frame_strategy='zero_pad',
         train_transform=train_transform,
         val_transform=val_transform,
-        shuffle=True
     )
 
     print(f"类别名称: {class_names}")

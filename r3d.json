@@ -1,0 +1,26 @@
+{
+  "model": {
+    "name": "SlowFastR3D",
+    "a": 8,
+    "b": 0.125,
+    "reshape_method": "time_to_channel"
+  },
+  "train": {
+    "epochs": 300,
+    "learning_rate": 0.001,
+    "save_dir": "checkpoints/r3d",
+    "batch_size": 8,
+    "resume_training": true
+  },
+  "dataloader": {
+    "dataset_json": "dataset.json",
+    "width": 224,
+    "height": 224,
+    "frames": 64,
+    "mode": "single",
+    "stride": 64,
+    "frame_strategy": "zero_pad",
+    "train_transform": "none",
+    "val_transform": "none"
+  }
+}
