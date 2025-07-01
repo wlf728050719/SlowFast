@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+from torchsummary import summary
 
 from model.common import Unit3D, InceptionModule
 
@@ -91,7 +92,7 @@ class SlowFastI3D(nn.Module):
                 'Mixed_5c': InceptionModule((256 + 320 + 128 + 128) * b, [384, 192, 384, 48, 128, 128], reduction=b,
                                             debug=self.inception_inner_debug)
             })
-        self.prediction_layer = nn.LazyLinear(self._number_classes)
+        self.classify_head = nn.LazyLinear(self._number_classes)
 
     def reshape(self, x):
         batch_size, alpha_T, S_squared, beta_C = x.shape
@@ -161,10 +162,11 @@ class SlowFastI3D(nn.Module):
         feature = torch.cat([slow_pool, fast_pool], dim=1)
         if self._endpoint == 'feature':
             return feature
-        else:
-            logits = self.prediction_layer(feature)
-            prediction = torch.softmax(logits, dim=1)
-            return prediction
+        logits = self.classify_head(feature)
+        if self._endpoint == 'logits':
+            return logits
+        prediction = torch.softmax(logits, dim=1)
+        return prediction
 
     def _lateral_conn(self, fast_feat, slow_feat):
         """横向连接维度转换"""
@@ -182,17 +184,22 @@ class SlowFastI3D(nn.Module):
 
 
 if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     model = SlowFastI3D(
         number_classes=4,
         input_channels=3,  # 3通道RGB
         a=8,  # 时间缩放因子 FastWay时间维度是SlowWay的a倍 建议time Mod (2a)
         b=0.125,  # 通道缩放因子 FastWay通道维度是SlowWay的b倍 建议为16 * b为整数
         reshape_method='time_to_channel',  # 横向连接策略  time_to_channel time_strided_sampling time_strided_conv
-        endpoint='prediction', #端点  feature/prediction
+        endpoint='prediction', #端点  feature/logits/prediction
         debug = 'simple' #debug模式 none/simple/all
-    )
+    ).to(device)
+
+    summary(model, (3, 64, 224, 224), device=device.type)
+
     # (batch, channel, time, height, width) time过小，a过大时会导致特征图过小无法卷积
-    x = torch.randn(2, 3, 64, 224, 224)
+    x = torch.randn(1, 3, 64, 224, 224).to(device)
     with torch.no_grad():
         output = model(x)
     print(output.shape)

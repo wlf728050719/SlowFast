@@ -46,7 +46,7 @@ def generate_action_json(root_dir, output_file):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='生成动作分类JSON文件')
-    parser.add_argument('--root_dir',default=r'/data/wlf_workspace/UCF-101',help='包含动作类别子目录的根目录')
+    parser.add_argument('--root_dir',default=r'D:\Desktop\UCF-101',help='包含动作类别子目录的根目录')
     parser.add_argument('--output', default='../dataset.json',
                         help='输出JSON文件路径')
 

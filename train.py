@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 from data_loader import get_data_loader
+from model.timesformer import TimeSformer
 from model.slow_fast_i3d import SlowFastI3D
 from model.slow_fast_r3d import SlowFastR3D
 from utils.metrics import compute_ap, compute_map
@@ -197,7 +198,7 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    config_path = "r3d.json"
+    config_path = "TimeSformer.json"
 
     with open(config_path, 'r') as f:
         config = json.load(f)
@@ -206,8 +207,8 @@ if __name__ == "__main__":
     train_loader, val_loader, class_names = get_data_loader(
         dataset_json=config['dataloader']['dataset_json'],
         batch_size=config['train']['batch_size'],
-        target_width=config['dataloader']['width'],
-        target_height=config['dataloader']['height'],
+        width=config['dataloader']['width'],
+        height=config['dataloader']['height'],
         num_frames=config['dataloader']['frames'],
         mode=config['dataloader']['mode'],
         stride=config['dataloader']['stride'],
@@ -215,6 +216,9 @@ if __name__ == "__main__":
         train_transform=None,
         val_transform=None
     )
+
+    print(f"Train batches: {len(train_loader)}")
+    print(f"Val batches: {len(val_loader)}")
 
     # Initialize model
     if config['model']['name'] == 'SlowFastR3D':
@@ -224,7 +228,7 @@ if __name__ == "__main__":
             b=config['model']['b'],
             number_classes=len(class_names),
             reshape_method=config['model']['reshape_method'],
-            endpoint='prediction'
+            endpoint='logits'
         )
     elif config['model']['name'] == 'SlowFastI3D':
         model = SlowFastI3D(
@@ -233,9 +237,26 @@ if __name__ == "__main__":
             b=config['model']['b'],
             number_classes=len(class_names),
             reshape_method=config['model']['reshape_method'],
-            endpoint='prediction'
+            endpoint='logits'
         )
-
+    elif config['model']['name'] == 'TimeSformer':
+        assert config['dataloader']['width'] == config['dataloader']['height'],f"dataloader width should be equal to dataloader height"
+        model = TimeSformer(
+            dim=config['model']['dim'],
+            frames=config['dataloader']['frames'],
+            number_classes=len(class_names),
+            image_size=config['dataloader']['width'],
+            patch_size=config['model']['patch_size'],
+            input_channels=3,
+            depth=config['model']['depth'],
+            heads=config['model']['heads'],
+            attn_dropout=config['model']['attn_dropout'],
+            ff_dropout=config['model']['ff_dropout'],
+            rotary_emb=config['model']['rotary_emb'],
+            shift_tokens=config['model']['shift_tokens'],
+            endpoint='logits'
+        )
+    print("Model:"+config['model']['name'])
     # Create and run trainer
     trainer = Trainer(config, model, train_loader, val_loader, class_names)
     trainer.train(resume=config['train']['resume_training'])

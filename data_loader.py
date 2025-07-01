@@ -6,106 +6,197 @@ import torchvision.transforms as transforms
 from torchvision.transforms.functional import resize, center_crop
 import numpy as np
 import cv2
+from abc import ABC, abstractmethod
+from typing import List, Dict, Tuple, Optional, Callable
+
+
+class FrameSamplingStrategy(ABC):
+    """Abstract base class for frame sampling strategies"""
+
+    def __init__(self, num_frames: int, frame_strategy: str = 'zero_pad'):
+        self.num_frames = num_frames
+        self.frame_strategy = frame_strategy
+        assert frame_strategy in ['zero_pad', 'discard'], "Invalid frame strategy"
+
+    @abstractmethod
+    def sample_frames(self, frames: np.ndarray) -> Optional[np.ndarray]:
+        """Sample frames from video according to the strategy"""
+        pass
+
+    def _handle_short_video(self, frames: np.ndarray) -> Optional[np.ndarray]:
+        """Handle videos shorter than required number of frames"""
+        if self.frame_strategy == 'zero_pad':
+            pad_frames = np.zeros((self.num_frames - len(frames), *frames.shape[1:]),
+                                  dtype=frames.dtype)
+            return np.concatenate([frames, pad_frames])
+        return None
+
+
+class SingleSegmentSampler(FrameSamplingStrategy):
+    """Sample first N frames from video"""
+
+    def sample_frames(self, frames: np.ndarray) -> Optional[np.ndarray]:
+        segment = frames[:self.num_frames]
+        return segment if len(segment) >= self.num_frames else self._handle_short_video(segment)
+
+
+class SlideWindowSampler(FrameSamplingStrategy):
+    """Slide window sampling with specified stride"""
+
+    def __init__(self, num_frames: int, stride: int, frame_strategy: str = 'zero_pad'):
+        super().__init__(num_frames, frame_strategy)
+        self.stride = stride
+
+    def sample_frames(self, frames: np.ndarray, start_idx: int = 0) -> Optional[np.ndarray]:
+        end_idx = start_idx + self.num_frames
+        segment = frames[start_idx:end_idx]
+        return segment if len(segment) >= self.num_frames else self._handle_short_video(segment)
+
+
+class UniformSampler(FrameSamplingStrategy):
+    """Uniformly sample frames across the video"""
+
+    def sample_frames(self, frames: np.ndarray) -> Optional[np.ndarray]:
+        total_frames = len(frames)
+
+        if total_frames >= self.num_frames:
+            indices = np.linspace(0, total_frames - 1, num=self.num_frames, dtype=np.int32)
+            return frames[indices]
+        return self._handle_short_video(frames)
+
+
+class VideoProcessor:
+    """Handles video frame processing and transformations"""
+
+    def __init__(self, target_width: int, target_height: int,
+                 transform: Optional[Callable] = None):
+        self.target_width = target_width
+        self.target_height = target_height
+        self.transform = transform
+
+    def process_frame(self, frame: np.ndarray) -> torch.Tensor:
+        """Process a single frame"""
+        # Convert to tensor and normalize
+        frame_tensor = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+
+        # Resize maintaining aspect ratio
+        h, w = frame_tensor.shape[1], frame_tensor.shape[2]
+        if h / w > self.target_height / self.target_width:
+            new_h = self.target_height
+            new_w = int(w * (self.target_height / h))
+        else:
+            new_w = self.target_width
+            new_h = int(h * (self.target_width / w))
+
+        frame_tensor = resize(frame_tensor, [new_h, new_w])
+        frame_tensor = center_crop(frame_tensor, [self.target_height, self.target_width])
+
+        if self.transform:
+            frame_tensor = self.transform(frame_tensor)
+
+        return frame_tensor
+
+    def process_segment(self, segment: np.ndarray) -> torch.Tensor:
+        """Process a segment of frames"""
+        processed_frames = []
+        for frame in segment:
+            if frame.sum() == 0:  # Zero-padded frame
+                processed_frame = torch.zeros((3, self.target_height, self.target_width))
+            else:
+                processed_frame = self.process_frame(frame)
+            processed_frames.append(processed_frame)
+
+        return torch.stack(processed_frames, dim=1)  # (C, T, H, W)
 
 
 class VideoDataset(Dataset):
-    def __init__(self, config_path, target_width=224, target_height=224,
-                 num_frames=16, stride=8, mode='single', frame_strategy='zero_pad',
-                 transform=None):
+    def __init__(self, config_path: str, width: int = 224, height: int = 224,
+                 num_frames: int = 16, stride: int = 8, mode: str = 'single',
+                 frame_strategy: str = 'zero_pad',
+                 transform: Optional[Callable] = None):
         """
-        参数:
-            config_path: config.json的路径
-            target_width: 目标视频宽度
-            target_height: 目标视频高度
-            num_frames: 每个样本的帧数
-            stride: 滑动窗口的步长
-            mode: 'single'或'slide'，决定每个视频返回多少样本
-            frame_strategy: 'zero_pad'或'discard'，处理不足长度视频的策略
-            transform: 可选的额外数据增强
+        Args:
+            config_path: Path to config.json
+            width: Target video width
+            height: Target video height
+            num_frames: Number of frames per sample
+            stride: Stride for sliding window
+            mode: 'single', 'slide' or 'uniform'
+            frame_strategy: 'zero_pad' or 'discard'
+            transform: Optional data augmentation
         """
-        assert mode in ['single', 'slide'], "mode must be 'single' or 'slide'"
-        assert frame_strategy in ['zero_pad', 'discard'], "frame_strategy must be 'zero_pad' or 'discard'"
-
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-
-        self.actions = config['actions']
-        self.target_width = target_width
-        self.target_height = target_height
+        self.target_width = width
+        self.target_height = height
         self.num_frames = num_frames
         self.stride = stride
         self.mode = mode
         self.frame_strategy = frame_strategy
         self.transform = transform
 
-        # 收集所有视频文件路径和对应的标签
+        # Load dataset configuration
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+
+        self.actions = config['actions']
+        self._setup_sampler()
+        self._load_video_metadata()
+        self.video_processor = VideoProcessor(width, height, transform)
+
+    def _setup_sampler(self):
+        """Initialize the appropriate frame sampler"""
+        if self.mode == 'single':
+            self.sampler = SingleSegmentSampler(self.num_frames, self.frame_strategy)
+        elif self.mode == 'slide':
+            self.sampler = SlideWindowSampler(self.num_frames, self.stride, self.frame_strategy)
+        elif self.mode == 'uniform':
+            self.sampler = UniformSampler(self.num_frames, self.frame_strategy)
+        else:
+            raise ValueError(f"Invalid mode: {self.mode}")
+
+    def _load_video_metadata(self):
+        """Load video paths and labels, and precompute sample counts"""
         self.video_paths = []
         self.labels = []
+        self.video_samples = []  # Number of samples per video
 
         for action in self.actions:
             video_dir = action['video_folder']
             label = action['label']
 
             for video_file in os.listdir(video_dir):
-                if video_file.endswith(('.mp4', '.avi', '.mov')):  # 支持常见视频格式
-                    self.video_paths.append(os.path.join(video_dir, video_file))
+                if video_file.endswith(('.mp4', '.avi', '.mov')):
+                    video_path = os.path.join(video_dir, video_file)
+                    self.video_paths.append(video_path)
                     self.labels.append(label)
 
-        # 对于slide模式，预计算每个视频的样本数
-        self.video_samples = []
-        if self.mode == 'slide':
-            for video_path in self.video_paths:
-                cap = cv2.VideoCapture(video_path)
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                cap.release()
+                    # For sliding window, precompute number of samples
+                    if self.mode == 'slide':
+                        cap = cv2.VideoCapture(video_path)
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        cap.release()
 
-                if total_frames >= self.num_frames:
-                    n_samples = (total_frames - self.num_frames) // self.stride + 1
-                else:
-                    if self.frame_strategy == 'zero_pad':
-                        n_samples = 1
+                        if total_frames >= self.num_frames:
+                            n_samples = (total_frames - self.num_frames) // self.stride + 1
+                        else:
+                            n_samples = 1 if self.frame_strategy == 'zero_pad' else 0
+                        self.video_samples.append(n_samples)
                     else:
-                        n_samples = 0
+                        self.video_samples.append(1)  # 1 sample per video for other modes
 
-                self.video_samples.append(n_samples)
-
-            # 创建索引映射 (dataset_idx -> (video_idx, window_idx))
+        # Create index mapping for sliding window mode
+        if self.mode == 'slide':
             self.index_map = []
             for video_idx, n_samples in enumerate(self.video_samples):
                 for window_idx in range(n_samples):
                     self.index_map.append((video_idx, window_idx))
 
-    def __len__(self):
-        if self.mode == 'single':
-            return len(self.video_paths)
-        else:
+    def __len__(self) -> int:
+        if self.mode == 'slide':
             return len(self.index_map)
+        return len(self.video_paths)
 
-    def _process_frame(self, frame):
-        """处理单个帧: 调整大小和裁剪"""
-        # 转换为CHW格式
-        frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
-
-        # 调整大小保持宽高比
-        h, w = frame.shape[1], frame.shape[2]
-        if h / w > self.target_height / self.target_width:
-            # 高度过大，先调整高度
-            new_h = self.target_height
-            new_w = int(w * (self.target_height / h))
-        else:
-            # 宽度过大，先调整宽度
-            new_w = self.target_width
-            new_h = int(h * (self.target_width / w))
-
-        frame = resize(frame, (new_h, new_w))
-
-        # 中心裁剪到目标尺寸
-        frame = center_crop(frame, (self.target_height, self.target_width))
-
-        return frame
-
-    def _load_video_frames(self, video_path):
-        """加载视频并返回所有帧"""
+    def _load_video_frames(self, video_path: str) -> np.ndarray:
+        """Load all frames from a video file"""
         cap = cv2.VideoCapture(video_path)
         frames = []
 
@@ -113,158 +204,115 @@ class VideoDataset(Dataset):
             ret, frame = cap.read()
             if not ret:
                 break
-
-            # 从BGR转换为RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(frame)
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         cap.release()
         return np.array(frames)
 
-    def _get_video_segment(self, frames, start_idx):
-        """获取视频片段，根据frame_strategy处理不足长度的情况"""
-        end_idx = start_idx + self.num_frames
-        segment_frames = frames[start_idx:end_idx]
-
-        if len(segment_frames) < self.num_frames:
-            if self.frame_strategy == 'zero_pad':
-                # 补零
-                pad_frames = np.zeros((self.num_frames - len(segment_frames), *segment_frames.shape[1:]),
-                                      dtype=segment_frames.dtype)
-                segment_frames = np.concatenate([segment_frames, pad_frames])
-            else:  # discard
-                return None
-
-        return segment_frames
-
-    def __getitem__(self, idx):
-        if self.mode == 'single':
-            video_path = self.video_paths[idx]
-            label = self.labels[idx]
-
-            # 加载视频
-            frames = self._load_video_frames(video_path)
-
-            # 只取第一个窗口
-            segment_frames = self._get_video_segment(frames, 0)
-            if segment_frames is None:  # 只有discard策略会返回None
-                # 返回一个空样本，需要在DataLoader中过滤
-                return torch.zeros((3, self.num_frames, self.target_height, self.target_width)), -1
-
-        else:  # slide模式
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        if self.mode == 'slide':
             video_idx, window_idx = self.index_map[idx]
-            video_path = self.video_paths[video_idx]
-            label = self.labels[video_idx]
+            start_idx = window_idx * self.stride if self.video_samples[video_idx] > 1 else 0
+        else:
+            video_idx = idx
+            start_idx = 0  # Not used for single or uniform sampling
 
-            # 加载视频
-            frames = self._load_video_frames(video_path)
+        video_path = self.video_paths[video_idx]
+        label = self.labels[video_idx]
 
-            # 计算窗口起始位置
-            if len(frames) >= self.num_frames:
-                start_idx = window_idx * self.stride
-            else:
-                start_idx = 0  # 只有zero_pad策略会进入这里
+        # Load video frames
+        frames = self._load_video_frames(video_path)
 
-            segment_frames = self._get_video_segment(frames, start_idx)
-            if segment_frames is None:  # 只有discard策略会返回None
-                # 返回一个空样本，需要在DataLoader中过滤
-                return torch.zeros((3, self.num_frames, self.target_height, self.target_width)), -1
+        # Sample frames according to strategy
+        if self.mode == 'slide':
+            segment = self.sampler.sample_frames(frames, start_idx)
+        else:
+            segment = self.sampler.sample_frames(frames)
 
-        # 处理每一帧
-        processed_frames = []
-        for frame in segment_frames:
-            if frame.sum() == 0:  # 补零的帧
-                processed_frame = torch.zeros((3, self.target_height, self.target_width))
-            else:
-                processed_frame = self._process_frame(frame)
-                if self.transform:
-                    processed_frame = self.transform(processed_frame)
-            processed_frames.append(processed_frame)
+        if segment is None:  # Only happens with discard strategy
+            return torch.zeros((3, self.num_frames, self.target_height, self.target_width)), -1
 
-        # 组合成张量 (C, T, H, W)
-        video_tensor = torch.stack(processed_frames, dim=1)
-
+        # Process the segment
+        video_tensor = self.video_processor.process_segment(segment)
         return video_tensor, label
 
 
-def get_data_loader(dataset_json, batch_size=8, target_width=224, target_height=224,
-                    num_frames=16, stride=8, mode='single', frame_strategy='zero_pad',
-                    train_transform=None, val_transform=None, num_workers=4,
-                    val_ratio=0.2, random_seed=42):
+def get_data_loader(dataset_json: str, batch_size: int = 8, width: int = 224, height: int = 224,
+                    num_frames: int = 16, stride: int = 8, mode: str = 'single',
+                    frame_strategy: str = 'zero_pad',
+                    train_transform: Optional[Callable] = None,
+                    val_transform: Optional[Callable] = None,
+                    num_workers: int = 4, val_ratio: float = 0.2,
+                    random_seed: int = 42) -> Tuple[DataLoader, DataLoader, List[str]]:
     """
-    创建训练集和验证集数据加载器，按80-20比例划分
+    Create train and validation data loaders with 80-20 split
 
-    参数:
-        dataset_json: 数据集配置文件路径
-        batch_size: 批量大小
-        target_width: 目标宽度
-        target_height: 目标高度
-        num_frames: 每个样本的帧数
-        stride: 滑动窗口步长
-        mode: 'single'或'slide'
-        frame_strategy: 'zero_pad'或'discard'
-        train_transform: 训练集数据增强
-        val_transform: 验证集数据增强
-        shuffle: 是否打乱数据
-        num_workers: 数据加载工作线程数
-        val_ratio: 验证集比例
-        random_seed: 随机种子
+    Args:
+        dataset_json: Path to dataset config file
+        batch_size: Batch size
+        width: Target width
+        height: Target height
+        num_frames: Number of frames per sample
+        stride: Stride for sliding window
+        mode: 'single', 'slide' or 'uniform'
+        frame_strategy: 'zero_pad' or 'discard'
+        train_transform: Training data augmentation
+        val_transform: Validation data augmentation
+        num_workers: Number of worker processes
+        val_ratio: Validation set ratio
+        random_seed: Random seed for reproducibility
 
-    返回:
-        train_loader: 训练集数据加载器
-        val_loader: 验证集数据加载器
-        class_names: 类别名称列表
+    Returns:
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        class_names: List of class names
     """
-    # 创建完整数据集
-    full_dataset = VideoDataset(
-        config_path=dataset_json,
-        target_width=target_width,
-        target_height=target_height,
-        num_frames=num_frames,
-        stride=stride,
-        mode=mode,
-        frame_strategy=frame_strategy,
-        transform=None  # 不在数据集级别应用变换，分别在训练和验证中应用
-    )
-
-    # 获取类别名称
+    # Load class names from config
     with open(dataset_json, 'r') as f:
         config = json.load(f)
     class_names = [action['name'] for action in config['actions']]
 
-    # 计算划分大小
+    # Create full dataset
+    full_dataset = VideoDataset(
+        config_path=dataset_json,
+        width=width,
+        height=height,
+        num_frames=num_frames,
+        stride=stride,
+        mode=mode,
+        frame_strategy=frame_strategy,
+        transform=None  # Will be set separately for train/val
+    )
+
+    # Split dataset
     val_size = int(len(full_dataset) * val_ratio)
     train_size = len(full_dataset) - val_size
 
-    # 随机划分数据集
     train_dataset, val_dataset = random_split(
         full_dataset,
         [train_size, val_size],
         generator=torch.Generator().manual_seed(random_seed)
     )
 
-    # 为训练集和验证集分别设置transform
+    # Set transforms
     train_dataset.dataset.transform = train_transform
     val_dataset.dataset.transform = val_transform
 
-    # 对于discard策略，需要过滤标签为-1的样本
-    if frame_strategy == 'discard':
-        def collate_fn(batch):
-            batch = [item for item in batch if item[1] != -1]
-            if len(batch) == 0:
-                return torch.zeros((0, 3, num_frames, target_height, target_width)), torch.zeros(0)
-            return torch.utils.data.dataloader.default_collate(batch)
-    else:
-        collate_fn = None
+    # Collate function to filter out invalid samples (for discard strategy)
+    def collate_fn(batch):
+        batch = [item for item in batch if item[1] != -1]
+        if len(batch) == 0:
+            return torch.zeros((0, 3, num_frames, height, width)), torch.zeros(0)
+        return torch.utils.data.dataloader.default_collate(batch)
 
-    # 创建数据加载器
+    # Create data loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn if frame_strategy == 'discard' else None
     )
 
     val_loader = DataLoader(
@@ -273,48 +321,46 @@ def get_data_loader(dataset_json, batch_size=8, target_width=224, target_height=
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=collate_fn
+        collate_fn=collate_fn if frame_strategy == 'discard' else None
     )
 
     return train_loader, val_loader, class_names
 
 
-# 示例使用
+# Example usage
 if __name__ == "__main__":
-    # 定义数据转换
+    # Define data transforms
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
     ])
 
-    val_transform = None  # 验证集通常不需要数据增强
-
-    print("=== 测试get_data_loader函数 ===")
+    print("=== Testing get_data_loader ===")
     train_loader, val_loader, class_names = get_data_loader(
         dataset_json="dataset.json",
         batch_size=4,
-        target_width=224,
-        target_height=224,
-        num_frames=64,
+        width=224,
+        height=224,
+        num_frames=8,
         stride=64,
-        mode='slide',
+        mode='uniform',
         frame_strategy='zero_pad',
         train_transform=train_transform,
-        val_transform=val_transform,
+        val_transform=None,
     )
 
-    print(f"类别名称: {class_names}")
-    print(f"训练集批次数量: {len(train_loader)}")
-    print(f"验证集批次数量: {len(val_loader)}")
+    print(f"Class names: {class_names}")
+    print(f"Train batches: {len(train_loader)}")
+    print(f"Val batches: {len(val_loader)}")
 
-    # 检查一个训练批次
+    # Check a training batch
     for videos, labels in train_loader:
-        print(f"\n训练批次 - 视频张量形状: {videos.shape}")  # (batch_size, 3, 16, 224, 224)
-        print(f"训练批次 - 标签: {labels}")
+        print(f"\nTrain batch - video shape: {videos.shape}")  # (batch_size, 3, 16, 224, 224)
+        print(f"Train batch - labels: {labels}")
         break
 
-    # 检查一个验证批次
+    # Check a validation batch
     for videos, labels in val_loader:
-        print(f"\n验证批次 - 视频张量形状: {videos.shape}")
-        print(f"验证批次 - 标签: {labels}")
+        print(f"\nVal batch - video shape: {videos.shape}")
+        print(f"Val batch - labels: {labels}")
         break
