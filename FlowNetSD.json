@@ -1,0 +1,16 @@
+{
+  "model": {
+    "name": "FlowNetSD"
+  },
+  "train": {
+    "epochs": 500,
+    "learning_rate": 0.001,
+    "save_dir": "checkpoints/FlowNetSD",
+    "batch_size": 32,
+    "resume_training": true
+  },
+  "dataloader": {
+    "root_dir": "/data/wlf_workspace/FlyingChairs",
+    "val_ratio": 0.2
+  }
+}
