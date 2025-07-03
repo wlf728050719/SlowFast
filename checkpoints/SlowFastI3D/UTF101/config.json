@@ -1,19 +1,14 @@
 {
   "model": {
-    "name": "TimeSformer",
-    "dim": 512,
-    "patch_size": 16,
-    "depth": 12,
-    "heads": 8,
-    "attn_dropout": 0.2,
-    "ff_dropout": 0.2,
-    "rotary_emb": true,
-    "shift_tokens": true
+    "name": "SlowFastI3D",
+    "a": 8,
+    "b": 0.125,
+    "reshape_method": "time_to_channel"
   },
   "train": {
     "epochs": 500,
     "learning_rate": 0.001,
-    "save_dir": "checkpoints/TimeSformer",
+    "save_dir": "checkpoints/SlowFastI3D/UTF101",
     "batch_size": 8,
     "resume_training": true
   },
@@ -21,7 +16,7 @@
     "dataset_json": "dataset.json",
     "width": 224,
     "height": 224,
-    "frames": 8,
+    "frames": 64,
     "mode": "uniform",
     "stride": 0,
     "frame_strategy": "zero_pad",

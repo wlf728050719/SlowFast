@@ -1,14 +1,11 @@
 {
   "model": {
-    "name": "SlowFastI3D",
-    "a": 8,
-    "b": 0.125,
-    "reshape_method": "time_to_channel"
+    "name": "I3D"
   },
   "train": {
     "epochs": 500,
     "learning_rate": 0.001,
-    "save_dir": "checkpoints/SlowFastI3D",
+    "save_dir": "checkpoints/I3D",
     "batch_size": 8,
     "resume_training": true
   },

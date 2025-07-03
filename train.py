@@ -9,6 +9,7 @@ from data_loader import get_data_loader
 from model.timesformer import TimeSformer
 from model.slow_fast_i3d import SlowFastI3D
 from model.slow_fast_r3d import SlowFastR3D
+from model.i3d import I3D
 from utils.metrics import compute_ap, compute_map
 from utils.plot import plot_loss, plot_acc, plot_map, plot_class_ap
 
@@ -45,6 +46,9 @@ class Trainer:
 
         # Create save directory
         os.makedirs(config['train']['save_dir'], exist_ok=True)
+        config_path = os.path.join(self.config['train']['save_dir'], 'config.json')
+        with open(config_path, 'w') as f:
+            json.dump(self.config, f, indent=4)
 
     def train_epoch(self):
         self.model.train()
@@ -198,7 +202,7 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    config_path = "TimeSformer.json"
+    config_path = "config.json"
 
     with open(config_path, 'r') as f:
         config = json.load(f)
@@ -254,6 +258,12 @@ if __name__ == "__main__":
             ff_dropout=config['model']['ff_dropout'],
             rotary_emb=config['model']['rotary_emb'],
             shift_tokens=config['model']['shift_tokens'],
+            endpoint='logits'
+        )
+    elif config['model']['name'] == 'I3D':
+        model = I3D(
+            input_channels=3,
+            number_classes=len(class_names),
             endpoint='logits'
         )
     print("Model:"+config['model']['name'])

@@ -130,7 +130,7 @@ class VideoPredictor:
 
 if __name__ == "__main__":
     # 配置参数
-    CONFIG_PATH = "SlowFastR3D.json"  # 与训练时相同的配置文件
+    CONFIG_PATH = "checkpoints/SlowFastR3D/UTF101/config.json"  # 与训练时相同的配置文件
     CHECKPOINT_PATH = "checkpoints/best_model.pth"  # 训练好的模型权重
     VIDEO_PATH = r"D:\Desktop\UCF-101\BlowDryHair\v_ApplyLipstick_g15_c02.avi"  # 待预测视频
 

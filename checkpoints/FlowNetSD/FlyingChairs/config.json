@@ -5,7 +5,7 @@
   "train": {
     "epochs": 500,
     "learning_rate": 0.001,
-    "save_dir": "checkpoints/FlowNetSD",
+    "save_dir": "checkpoints/FlowNetSD/FlyingChairs",
     "batch_size": 32,
     "resume_training": true
   },

@@ -196,7 +196,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, config, d
 
 if __name__ == '__main__':
     # 加载配置
-    config = load_config(r"FlowNetSD.json")
+    config = load_config(r"checkpoints/FlowNetSD/FlyingChairs/config.json")
     # 设置设备
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\nUsing device: {device}")
