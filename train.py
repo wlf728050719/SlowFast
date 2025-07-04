@@ -207,16 +207,44 @@ if __name__ == "__main__":
     with open(config_path, 'r') as f:
         config = json.load(f)
 
+    if config['dataloader']['mode'] == 'head':
+        sampler_args = {
+            'mode': 'head',
+            'num_frames': config['dataloader']['num_frames'],
+            'frame_strategy': config['dataloader']['frame_strategy']
+        }
+        frames = sampler_args['num_frames']
+    elif config['dataloader']['mode'] == 'slide':
+        sampler_args = {
+            'mode': 'slide',
+            'window_size': config['dataloader']['window_size'],
+            'stride': config['dataloader']['stride'],
+            'frame_strategy': config['dataloader']['frame_strategy']
+        }
+        frames = sampler_args['window_size']
+    elif config['dataloader']['mode'] == 'uniform':
+        sampler_args = {
+            'mode': 'uniform',
+            'num_frames': config['dataloader']['num_frames'],
+            'frame_strategy': config['dataloader']['frame_strategy']
+        }
+        frames = sampler_args['num_frames']
+    elif config['dataloader']['mode'] == 'group':
+        sampler_args = {
+            'mode': 'group',
+            'num_groups': config['dataloader']['num_groups'],
+            'frames_per_group': config['dataloader']['frames_per_group'],
+            'frame_strategy': config['dataloader']['frame_strategy']
+        }
+        frames = sampler_args['num_groups']*sampler_args['frames_per_group']
+    print('input frames:', frames)
     # Prepare data loaders
     train_loader, val_loader, class_names = get_data_loader(
+        sampler_args=sampler_args,
         dataset_json=config['dataloader']['dataset_json'],
         batch_size=config['train']['batch_size'],
         width=config['dataloader']['width'],
         height=config['dataloader']['height'],
-        num_frames=config['dataloader']['frames'],
-        mode=config['dataloader']['mode'],
-        stride=config['dataloader']['stride'],
-        frame_strategy=config['dataloader']['frame_strategy'],
         train_transform=None,
         val_transform=None
     )
@@ -244,10 +272,11 @@ if __name__ == "__main__":
             endpoint='logits'
         )
     elif config['model']['name'] == 'TimeSformer':
-        assert config['dataloader']['width'] == config['dataloader']['height'],f"dataloader width should be equal to dataloader height"
+        assert config['dataloader']['width'] == config['dataloader'][
+            'height'], f"dataloader width should be equal to dataloader height"
         model = TimeSformer(
             dim=config['model']['dim'],
-            frames=config['dataloader']['frames'],
+            frames=frames,
             number_classes=len(class_names),
             image_size=config['dataloader']['width'],
             patch_size=config['model']['patch_size'],
@@ -266,7 +295,7 @@ if __name__ == "__main__":
             number_classes=len(class_names),
             endpoint='logits'
         )
-    print("Model:"+config['model']['name'])
+    print("Model:" + config['model']['name'])
     # Create and run trainer
     trainer = Trainer(config, model, train_loader, val_loader, class_names)
     trainer.train(resume=config['train']['resume_training'])
